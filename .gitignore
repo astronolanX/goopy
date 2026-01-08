@@ -29,10 +29,15 @@ venv/
 # Goopy ephemeral blobs (session-scoped)
 .claude/context.blob.xml
 .claude/contexts/
+.claude/.last-cleanup
+.claude/constraints/
+.claude/facts/
+.claude/threads/
 
-# Audit draft artifacts
+# Audit draft artifacts and session contexts
 .goopy/reports/*-draft.*
 .goopy/cache/
+.goopy/contexts/
 
 # IDE
 .idea/
