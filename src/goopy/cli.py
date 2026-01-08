@@ -11,7 +11,7 @@ from collections import defaultdict
 
 def cmd_sprout(args):
     """Create a new blob."""
-    from goopy.blob import Glob, Blob, BlobType, BlobScope, BlobStatus
+    from goopy.blob import Glob, Blob, BlobType, BlobScope, BlobStatus, KNOWN_SUBDIRS
 
     project_dir = Path.cwd()
     glob = Glob(project_dir)
@@ -88,7 +88,7 @@ def cmd_sprout(args):
 
 def cmd_decompose(args):
     """Archive stale blobs."""
-    from goopy.blob import Glob, BlobScope
+    from goopy.blob import Glob, BlobScope, KNOWN_SUBDIRS
 
     project_dir = Path.cwd()
     glob = Glob(project_dir)
@@ -100,7 +100,7 @@ def cmd_decompose(args):
     stale: list[tuple[Path, str, object]] = []
 
     # Check root and all subdirs
-    for subdir in [None, "threads", "decisions", "constraints", "contexts", "facts"]:
+    for subdir in [None, *KNOWN_SUBDIRS]:
         for name, blob in glob.list_blobs(subdir):
             # Only session-scoped blobs are candidates for decomposition
             if blob.scope != BlobScope.SESSION:
@@ -163,7 +163,7 @@ def cmd_migrate(args):
 
 def cmd_list(args):
     """Show blob population health and diagnostics."""
-    from goopy.blob import Glob, Blob, BlobType, BlobScope, BlobStatus, BLOB_VERSION
+    from goopy.blob import Glob, Blob, BlobType, BlobScope, BlobStatus, BLOB_VERSION, KNOWN_SUBDIRS
 
     project_dir = Path.cwd()
     glob = Glob(project_dir)
@@ -177,7 +177,7 @@ def cmd_list(args):
         all_blobs.append((path, name, blob))
 
     # Subdirectory blobs
-    for subdir in ["threads", "decisions", "constraints", "contexts", "facts"]:
+    for subdir in KNOWN_SUBDIRS:
         for name, blob in glob.list_blobs(subdir):
             path = glob.claude_dir / subdir / f"{name}.blob.xml"
             all_blobs.append((path, name, blob))

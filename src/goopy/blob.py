@@ -117,6 +117,9 @@ class BlobStatus(Enum):
 # Current blob schema version - increment when schema changes
 BLOB_VERSION = 2
 
+# Known subdirectories for blob organization (DRY: single source of truth)
+KNOWN_SUBDIRS = ("threads", "decisions", "constraints", "contexts", "facts")
+
 
 @dataclass
 class Blob:
@@ -403,7 +406,7 @@ class Glob:
         # Collect all blobs from root and all known subdirectories
         all_blobs = []
         all_blobs.extend(self.list_blobs())
-        for subdir in ["threads", "decisions", "constraints", "contexts", "facts"]:
+        for subdir in KNOWN_SUBDIRS:
             all_blobs.extend(self.list_blobs(subdir))
 
         for name, blob in all_blobs:
@@ -503,7 +506,7 @@ class Glob:
         # Check all blobs from root and all known subdirectories
         all_blobs = []
         all_blobs.extend(self.list_blobs())
-        for subdir in ["threads", "decisions", "constraints", "contexts", "facts"]:
+        for subdir in KNOWN_SUBDIRS:
             all_blobs.extend(self.list_blobs(subdir))
 
         for name, blob in all_blobs:
@@ -511,7 +514,7 @@ class Glob:
                 # Reconstruct path
                 path = self.claude_dir / f"{name}.blob.xml"
                 if not path.exists():
-                    for subdir in ["threads", "decisions", "constraints", "contexts", "facts"]:
+                    for subdir in KNOWN_SUBDIRS:
                         candidate = self.claude_dir / subdir / f"{name}.blob.xml"
                         if candidate.exists():
                             path = candidate
