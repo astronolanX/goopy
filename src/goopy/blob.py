@@ -7,11 +7,14 @@ A "glob" is a collection of blobs.
 """
 
 import xml.etree.ElementTree as ET
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from enum import Enum
+from uuid import uuid4
 
 
 class BlobType(Enum):

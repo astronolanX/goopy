@@ -3,9 +3,7 @@ active: true
 iteration: 1
 max_iterations: 0
 completion_promise: "RALPH_DONE"
-started_at: "2026-01-08T12:53:20Z"
-auto_invoked: true
-karen_enabled: true
+started_at: "2026-01-08T13:54:05Z"
 ---
 
-where did we leave off
+cancel
