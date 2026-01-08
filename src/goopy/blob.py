@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 import os
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from enum import Enum
@@ -534,3 +534,101 @@ class Glob:
             blob.migrate()
             blob.save(path)
         return len(outdated)
+
+    def cleanup_session(
+        self,
+        archive_days: int = 30,
+        dry_run: bool = False,
+    ) -> dict:
+        """
+        Session-start cleanup with exclusive lock for swarm safety.
+
+        Performs:
+        - Prune SESSION-scope blobs from previous sessions
+        - Prune archives older than archive_days
+        - Migrate outdated blobs
+        - Check for orphaned file references (warning only)
+
+        Uses lock file (.cleanup.lock) to prevent concurrent cleanup.
+        Uses marker file (.last-cleanup) to skip if already cleaned today.
+
+        Returns dict with counts: sessions_pruned, archives_pruned, migrated
+        """
+        results = {
+            "sessions_pruned": 0,
+            "archives_pruned": 0,
+            "migrated": 0,
+            "skipped": False,
+            "locked": False,
+        }
+
+        lock_path = self.claude_dir / ".cleanup.lock"
+        marker_path = self.claude_dir / ".last-cleanup"
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Fast path: already cleaned today
+        if marker_path.exists():
+            try:
+                if marker_path.read_text().strip() == today:
+                    results["skipped"] = True
+                    return results
+            except Exception:
+                pass  # Marker corrupted, proceed with cleanup
+
+        # Acquire exclusive lock (non-blocking)
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            # Another agent is cleaning - skip gracefully
+            results["locked"] = True
+            return results
+
+        try:
+            # 1. Prune stale SESSION-scope blobs
+            threshold = datetime.now()
+            for subdir in [None, *KNOWN_SUBDIRS]:
+                for name, blob in self.list_blobs(subdir):
+                    if blob.scope != BlobScope.SESSION:
+                        continue
+                    # SESSION blobs from previous days are stale
+                    if blob.updated.date() < threshold.date():
+                        if subdir:
+                            path = self.claude_dir / subdir / f"{name}.blob.xml"
+                        else:
+                            path = self.claude_dir / f"{name}.blob.xml"
+                        if not dry_run:
+                            path.unlink(missing_ok=True)
+                        results["sessions_pruned"] += 1
+
+            # 2. Prune old archives
+            archive_dir = self.claude_dir / "archive"
+            if archive_dir.exists():
+                cutoff = datetime.now().date() - timedelta(days=archive_days)
+                for path in archive_dir.glob("*.blob.xml"):
+                    try:
+                        blob = Blob.load(path)
+                        if blob.updated.date() < cutoff:
+                            if not dry_run:
+                                path.unlink()
+                            results["archives_pruned"] += 1
+                    except Exception:
+                        continue  # Skip corrupted files
+
+            # 3. Migrate outdated blobs
+            if not dry_run:
+                results["migrated"] = self.migrate_all()
+            else:
+                results["migrated"] = len(self.check_migrations())
+
+            # 4. Update marker
+            if not dry_run:
+                _atomic_write(marker_path, today)
+
+        finally:
+            os.close(fd)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+        return results

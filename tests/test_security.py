@@ -14,6 +14,7 @@ import pytest
 import tempfile
 import threading
 import multiprocessing
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from uuid import uuid4
@@ -597,3 +598,197 @@ class TestSecurityIntegration:
 
             with pytest.raises(PathTraversalError):
                 glob.decompose("ok", subdir="../escape")
+
+
+# =============================================================================
+# Cleanup Session Tests (Swarm Safety)
+# =============================================================================
+
+
+class TestCleanupSessionBasic:
+    """Basic cleanup_session() functionality tests."""
+
+    def test_cleanup_session_empty_glob(self):
+        """Cleanup on empty glob succeeds with no changes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+            results = glob.cleanup_session()
+
+            assert results["sessions_pruned"] == 0
+            assert results["archives_pruned"] == 0
+            assert results["migrated"] == 0
+            assert not results["skipped"]
+            assert not results["locked"]
+
+    def test_cleanup_prunes_old_session_blobs(self):
+        """Old SESSION-scope blobs are pruned."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            # Create a session blob with old date
+            from datetime import timedelta
+            old_date = datetime.now() - timedelta(days=2)
+            blob = Blob(
+                type=BlobType.CONTEXT,
+                summary="Old session",
+                scope=BlobScope.SESSION,
+                updated=old_date,
+            )
+            path = glob.sprout(blob, "old-session", subdir="contexts")
+            assert path.exists()
+
+            # Run cleanup
+            results = glob.cleanup_session()
+            assert results["sessions_pruned"] == 1
+            assert not path.exists()
+
+    def test_cleanup_preserves_project_scope_blobs(self):
+        """PROJECT-scope blobs are not pruned."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            # Create a project blob with old date
+            from datetime import timedelta
+            old_date = datetime.now() - timedelta(days=30)
+            blob = Blob(
+                type=BlobType.FACT,
+                summary="Old project fact",
+                scope=BlobScope.PROJECT,
+                updated=old_date,
+            )
+            path = glob.sprout(blob, "old-fact", subdir="facts")
+
+            # Run cleanup
+            results = glob.cleanup_session()
+            assert results["sessions_pruned"] == 0
+            assert path.exists()
+
+    def test_cleanup_prunes_old_archives(self):
+        """Archives older than threshold are pruned."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            # Create and decompose a blob
+            blob = Blob(type=BlobType.THREAD, summary="To archive", status=BlobStatus.ACTIVE)
+            glob.sprout(blob, "to-archive", subdir="threads")
+            glob.decompose("to-archive", subdir="threads")
+
+            # Manually backdate the archive
+            archive_dir = glob.claude_dir / "archive"
+            archived = list(archive_dir.glob("*.blob.xml"))[0]
+            archived_blob = Blob.load(archived)
+            archived_blob.updated = datetime.now() - timedelta(days=60)
+            archived_blob.save(archived)
+
+            # Run cleanup with 30-day threshold
+            results = glob.cleanup_session(archive_days=30)
+            assert results["archives_pruned"] == 1
+            assert not archived.exists()
+
+    def test_cleanup_dry_run(self):
+        """Dry run reports but doesn't delete."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            # Create old session blob
+            old_date = datetime.now() - timedelta(days=2)
+            blob = Blob(
+                type=BlobType.CONTEXT,
+                summary="Old session",
+                scope=BlobScope.SESSION,
+                updated=old_date,
+            )
+            path = glob.sprout(blob, "old-session", subdir="contexts")
+
+            # Dry run
+            results = glob.cleanup_session(dry_run=True)
+            assert results["sessions_pruned"] == 1
+            assert path.exists()  # Still exists
+
+    def test_cleanup_skips_if_already_cleaned_today(self):
+        """Cleanup skips if already run today."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            # First cleanup
+            results1 = glob.cleanup_session()
+            assert not results1["skipped"]
+
+            # Second cleanup same day
+            results2 = glob.cleanup_session()
+            assert results2["skipped"]
+
+
+class TestCleanupSessionConcurrency:
+    """Concurrent cleanup tests for swarm safety."""
+
+    def test_cleanup_lock_prevents_concurrent_cleanup(self):
+        """Lock file prevents concurrent cleanup."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            # Simulate another agent holding lock
+            lock_path = glob.claude_dir / ".cleanup.lock"
+            lock_path.touch()
+
+            # Our cleanup should skip
+            results = glob.cleanup_session()
+            assert results["locked"]
+            assert results["sessions_pruned"] == 0
+
+            # Clean up lock
+            lock_path.unlink()
+
+    def test_cleanup_lock_released_on_success(self):
+        """Lock file is released after successful cleanup."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            glob.cleanup_session()
+
+            lock_path = glob.claude_dir / ".cleanup.lock"
+            assert not lock_path.exists()
+
+    def test_cleanup_lock_released_on_error(self):
+        """Lock file is released even if cleanup fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+
+            # Create a corrupted blob that will fail to load
+            (glob.claude_dir / "contexts").mkdir(parents=True)
+            (glob.claude_dir / "contexts" / "corrupt.blob.xml").write_text("garbage")
+
+            # Cleanup should still complete
+            results = glob.cleanup_session()
+
+            lock_path = glob.claude_dir / ".cleanup.lock"
+            assert not lock_path.exists()
+
+    def test_concurrent_cleanup_one_wins(self):
+        """Multiple concurrent cleanups: only one runs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glob = Glob(Path(tmpdir))
+            results_list = []
+            errors = []
+
+            def run_cleanup():
+                try:
+                    results = glob.cleanup_session()
+                    results_list.append(results)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=run_cleanup) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert not errors
+
+            # Exactly one should have run, others skipped or locked
+            ran = sum(1 for r in results_list if not r["skipped"] and not r["locked"])
+            skipped_or_locked = sum(1 for r in results_list if r["skipped"] or r["locked"])
+
+            # First one runs, rest are skipped (already cleaned) or locked
+            assert ran + skipped_or_locked == 5

@@ -339,6 +339,48 @@ def cmd_list(args):
         print("Suggestions: None - glob looks healthy!")
 
 
+def cmd_cleanup(args):
+    """Session-start cleanup with swarm-safe locking."""
+    from goopy.blob import Glob
+
+    project_dir = Path.cwd()
+    glob = Glob(project_dir)
+
+    results = glob.cleanup_session(
+        archive_days=args.archive_days or 30,
+        dry_run=args.dry_run,
+    )
+
+    if results["skipped"]:
+        print("Cleanup: Already cleaned today (skipped)")
+        return
+
+    if results["locked"]:
+        print("Cleanup: Another agent is cleaning (skipped)")
+        return
+
+    total = results["sessions_pruned"] + results["archives_pruned"] + results["migrated"]
+
+    if total == 0:
+        print("Cleanup: Nothing to clean")
+        return
+
+    if args.dry_run:
+        print("Cleanup (dry-run):")
+    else:
+        print("Cleanup:")
+
+    if results["sessions_pruned"]:
+        print(f"  Sessions pruned: {results['sessions_pruned']}")
+    if results["archives_pruned"]:
+        print(f"  Archives pruned: {results['archives_pruned']}")
+    if results["migrated"]:
+        print(f"  Blobs migrated: {results['migrated']}")
+
+    if args.dry_run:
+        print("\nRun without --dry-run to apply")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="goopy",
@@ -386,6 +428,16 @@ def main():
     decompose_parser.add_argument("--days", type=int, help="Age threshold in days (default: 7)")
     decompose_parser.add_argument("--dry-run", action="store_true", help="Preview without archiving")
     decompose_parser.set_defaults(func=cmd_decompose)
+
+    # cleanup
+    cleanup_parser = subparsers.add_parser(
+        "cleanup",
+        help="Session-start cleanup (swarm-safe)",
+        description="Prune stale sessions, old archives, and migrate blobs. Uses lock file for swarm safety."
+    )
+    cleanup_parser.add_argument("--archive-days", type=int, help="Days before pruning archives (default: 30)")
+    cleanup_parser.add_argument("--dry-run", action="store_true", help="Preview without applying")
+    cleanup_parser.set_defaults(func=cmd_cleanup)
 
     args = parser.parse_args()
     args.func(args)

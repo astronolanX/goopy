@@ -1,0 +1,34 @@
+<blob type="thread" scope="project" status="active" updated="2026-01-08" v="2">
+  <summary>Implement goopy cleanup --session for swarm-safe housekeeping</summary>
+  <context>
+    Session-start cleanup with exclusive lock to handle multi-agent scenarios.
+    Prunes stale SESSION blobs, old archives, runs migrations.
+    Once-per-day execution with .last-cleanup marker for fast skip.
+    Lock file coordination prevents race conditions in swarm mode.
+  </context>
+  <files>
+    <file>src/goopy/blob.py</file>
+    <file>src/goopy/cli.py</file>
+    <file>tests/test_security.py</file>
+  </files>
+  <decisions>
+    <decision why="simplicity">Use O_EXCL lock file over leader election for MVP</decision>
+    <decision why="performance">Daily skip via .last-cleanup marker</decision>
+    <decision why="swarm-safety">Skip gracefully if lock held by another agent</decision>
+  </decisions>
+  <facts>
+    <fact>Severity: MEDIUM</fact>
+    <fact>Confidence: 0.95 (spike complete)</fact>
+    <fact>Effort: 0.5 days</fact>
+    <fact>Token cost: ZERO (pure Python)</fact>
+  </facts>
+  <next>
+    <step>Add Glob.cleanup_session() method to blob.py</step>
+    <step>Add cleanup subcommand to cli.py</step>
+    <step>Add concurrent cleanup tests</step>
+    <step>Hook into session start (UserPromptSubmit or inject_context)</step>
+  </next>
+  <related>
+    <ref>spikes/2026-01-08-goopy-swarm-cleanup-future-proofing</ref>
+  </related>
+</blob>
