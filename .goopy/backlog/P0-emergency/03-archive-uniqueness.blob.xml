@@ -1,4 +1,4 @@
-<blob type="thread" scope="project" status="active" updated="2026-01-08" v="2">
+<blob type="thread" scope="project" status="done" updated="2026-01-08" v="2">
   <summary>Add UUID suffix to archive filenames</summary>
   <context>
     Archive naming uses only date prefix: YYYYMMDD-name.blob.xml
