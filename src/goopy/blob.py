@@ -17,6 +17,79 @@ from enum import Enum
 from uuid import uuid4
 
 
+class PathTraversalError(ValueError):
+    """Raised when a path attempts directory traversal."""
+    pass
+
+
+def _validate_path_safe(base_dir: Path, target_path: Path) -> Path:
+    """
+    Validate that target_path is safely contained within base_dir.
+
+    Prevents directory traversal attacks (e.g., ../../../etc/passwd).
+
+    Args:
+        base_dir: The allowed base directory
+        target_path: The path to validate
+
+    Returns:
+        The resolved absolute path if safe
+
+    Raises:
+        PathTraversalError: If path escapes base_dir
+    """
+    # Resolve both to absolute paths
+    base_resolved = base_dir.resolve()
+    target_resolved = target_path.resolve()
+
+    # Check that target is within base
+    try:
+        target_resolved.relative_to(base_resolved)
+    except ValueError:
+        raise PathTraversalError(
+            f"Path '{target_path}' escapes base directory '{base_dir}'"
+        )
+
+    return target_resolved
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """
+    Atomically write content to a file using temp+rename pattern.
+
+    This ensures that readers never see partial writes - they either
+    see the old content or the complete new content.
+
+    Args:
+        path: Destination file path
+        content: Content to write
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write to temp file in same directory (ensures same filesystem for rename)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp"
+    )
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)  # Ensure data hits disk
+        os.close(fd)
+        fd = None
+
+        # Atomic rename (POSIX guarantees atomicity on same filesystem)
+        os.rename(tmp_path, path)
+    except Exception:
+        # Clean up temp file on failure
+        if fd is not None:
+            os.close(fd)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
 class BlobType(Enum):
     """Types of blobs in a glob."""
     CONTEXT = "context"      # Session state, what was I doing
@@ -221,9 +294,8 @@ class Blob:
         )
 
     def save(self, path: Path):
-        """Save blob to file."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.to_xml())
+        """Save blob to file atomically."""
+        _atomic_write(path, self.to_xml())
 
     @classmethod
     def load(cls, path: Path) -> "Blob":
@@ -254,23 +326,38 @@ class Glob:
 
         Returns:
             Path to the created blob file
+
+        Raises:
+            PathTraversalError: If name or subdir attempts directory traversal
         """
         if subdir:
             target_dir = self.claude_dir / subdir
         else:
             target_dir = self.claude_dir
 
-        target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / f"{name}.blob.xml"
+
+        # Validate path is safely within .claude directory
+        _validate_path_safe(self.claude_dir, path)
+
+        target_dir.mkdir(parents=True, exist_ok=True)
         blob.save(path)
         return path
 
     def get(self, name: str, subdir: Optional[str] = None) -> Optional[Blob]:
-        """Get a blob by name."""
+        """
+        Get a blob by name.
+
+        Raises:
+            PathTraversalError: If name or subdir attempts directory traversal
+        """
         if subdir:
             path = self.claude_dir / subdir / f"{name}.blob.xml"
         else:
             path = self.claude_dir / f"{name}.blob.xml"
+
+        # Validate path is safely within .claude directory
+        _validate_path_safe(self.claude_dir, path)
 
         if path.exists():
             return Blob.load(path)
@@ -351,11 +438,19 @@ class Glob:
         return [blob for _, blob in relevant]
 
     def decompose(self, name: str, subdir: Optional[str] = None):
-        """Move a blob to the archive (decomposition)."""
+        """
+        Move a blob to the archive (decomposition).
+
+        Raises:
+            PathTraversalError: If name or subdir attempts directory traversal
+        """
         if subdir:
             src = self.claude_dir / subdir / f"{name}.blob.xml"
         else:
             src = self.claude_dir / f"{name}.blob.xml"
+
+        # Validate source path is safely within .claude directory
+        _validate_path_safe(self.claude_dir, src)
 
         if not src.exists():
             return
@@ -367,9 +462,10 @@ class Glob:
         archive_dir = self.claude_dir / "archive"
         archive_dir.mkdir(exist_ok=True)
 
-        # Include date in archived name
+        # Include date and UUID in archived name for uniqueness
         date_str = datetime.now().strftime("%Y%m%d")
-        archive_path = archive_dir / f"{date_str}-{name}.blob.xml"
+        unique_id = uuid4().hex[:8]
+        archive_path = archive_dir / f"{date_str}-{name}-{unique_id}.blob.xml"
         blob.save(archive_path)
 
         # Remove original

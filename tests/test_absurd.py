@@ -211,13 +211,15 @@ class TestAbsurdGlobOperations:
     """Absurd operations on Glob."""
 
     def test_sprout_to_parent_directory(self):
-        """Attempting to sprout outside .claude."""
+        """Attempting to sprout outside .claude raises PathTraversalError."""
+        from goopy.blob import PathTraversalError
+
         with tempfile.TemporaryDirectory() as tmpdir:
             glob = Glob(Path(tmpdir))
             blob = Blob(type=BlobType.FACT, summary="Escape")
-            # Subdir with parent traversal
-            path = glob.sprout(blob, "test", subdir="../escape")
-            # Should create within .claude or fail safely
+            # Subdir with parent traversal should raise
+            with pytest.raises(PathTraversalError):
+                glob.sprout(blob, "test", subdir="../escape")
 
     def test_decompose_twice(self):
         """Decomposing same blob twice."""
